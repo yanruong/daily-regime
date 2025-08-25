@@ -1,13 +1,16 @@
-name: Cron Debug
+name: Daily Reminder
 
 on:
   schedule:
-    - cron: "*/1 * * * *"   # every 5 minutes
+    - cron: "30 1 * * 1-5"   # 01:30 UTC = 09:30 SGT, Mon–Fri
   workflow_dispatch:
 
 jobs:
-  debug:
+  reminder:
     runs-on: ubuntu-latest
     steps:
-      - name: Print UTC time
-        run: date -u
+      - name: Send Telegram reminder
+        run: |
+          curl -s -X POST https://api.telegram.org/bot${{ secrets.TELEGRAM_TOKEN }}/sendMessage \
+          -d chat_id=${{ secrets.CHAT_ID }} \
+          -d text="⏰ Reminder: Please update the Google Sheet with yesterday’s data before the 10:00 AM run."
