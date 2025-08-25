@@ -2,6 +2,7 @@ import os, json, numpy as np, pandas as pd
 from pathlib import Path
 from pydrive2.auth import GoogleAuth
 from pydrive2.drive import GoogleDrive
+from pydrive2.auth import GoogleAuth, ServiceAccountCredentials
 import requests
 
 # === TELEGRAM ===
@@ -19,18 +20,20 @@ def send_file(path):
 
 # === GOOGLE DRIVE ===
 def get_drive():
+    # write service account JSON to creds.json
     with open("creds.json", "w") as f:
         f.write(os.getenv("GOOGLE_CREDS"))
+
     gauth = GoogleAuth()
-    gauth.LoadCredentialsFile("creds.json")
-    if not gauth.credentials:
-        gauth.LocalWebserverAuth()
-    elif gauth.access_token_expired:
-        gauth.Refresh()
-    else:
-        gauth.Authorize()
-    gauth.SaveCredentialsFile("creds.json")
+
+    # Load service account creds directly
+    gauth.credentials = ServiceAccountCredentials.from_json_keyfile_name(
+        "creds.json",
+        scopes=['https://www.googleapis.com/auth/drive']
+    )
+
     return GoogleDrive(gauth)
+
 
 # === CONFIG ===
 TZ = "Asia/Singapore"
