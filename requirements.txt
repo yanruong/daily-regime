@@ -1,0 +1,5 @@
+pandas
+numpy
+requests
+pydrive2
+pyarrow
