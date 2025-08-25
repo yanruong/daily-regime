@@ -54,22 +54,26 @@ OUT_DIR.mkdir(exist_ok=True)
 MIN_HIST_DAYS = 60
 
 # === FUNCTIONS (regime analysis) ===
-def load_intraday_epoch_s(df_in, tz=TZ, time_col="time", unit="s", cutoff=None):
+def load_intraday_epoch_s(df_in, tz=TZ, time_col="time", cutoff=None):
     if isinstance(df_in, str):  # CSV path
         df = pd.read_csv(df_in)
     else:  # DataFrame from Sheets
         df = df_in.copy()
 
-    # Ensure time column exists
     if time_col not in df.columns:
-        raise ValueError(f"Expected a '{time_col}' column in the sheet")
+        raise ValueError(f"Expected a '{time_col}' column in the data")
 
-    t = pd.to_datetime(df[time_col], errors="coerce", utc=True)
+    # Parse epoch seconds → datetime index
+    t = pd.to_datetime(df[time_col].astype(float), unit="s", utc=True, errors="coerce")
+
     df = df.drop(columns=[time_col]).set_index(t).sort_index()
-    if df.index.tz is None: df.index = df.index.tz_localize("UTC")
+    if df.index.tz is None:
+        df.index = df.index.tz_localize("UTC")
     df = df.tz_convert(tz)
+
     df.columns = [c.lower() for c in df.columns]
     return df
+
 
 def daily_prevday_features(df, tz=TZ, atr_n=14, vol_n=20):
     day = (df.index if df.index.tz else df.index.tz_localize(tz)).tz_convert(tz).normalize()
