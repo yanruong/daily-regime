@@ -1,13 +1,13 @@
-name: Cron Test
+name: Cron Debug
 
 on:
   schedule:
-    - cron: "*/1 * * * *"
+    - cron: "*/5 * * * *"   # every 5 minutes
   workflow_dispatch:
 
 jobs:
-  ping:
+  debug:
     runs-on: ubuntu-latest
     steps:
-      - name: Show time
-        run: date
+      - name: Print UTC time
+        run: date -u
