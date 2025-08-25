@@ -1,4 +1,4 @@
-import os, json, numpy as np, pandas as pd
+import os, json, numpy as np, pandas as pd 
 from pathlib import Path
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
@@ -6,26 +6,30 @@ import requests
 
 # === TELEGRAM ===
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
-CHAT_ID = os.getenv("CHAT_ID")  # now set to your GROUP ID in GitHub Secrets
+CHAT_ID = os.getenv("CHAT_ID")  # set in GitHub Secrets
 
-print("DEBUG: TELEGRAM_TOKEN set?", TELEGRAM_TOKEN is not None)
-print("DEBUG: CHAT_ID =", CHAT_ID)
-
-def send_message(msg):
+def send_message(msg: str):
+    """Send plain text message to Telegram group."""
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-    r = requests.post(url, data={"chat_id": CHAT_ID, "text": msg})
-    print("DEBUG send_message response:", r.text)
-    return r
+    try:
+        r = requests.post(url, data={"chat_id": CHAT_ID, "text": msg})
+        r.raise_for_status()
+    except Exception as e:
+        print("⚠️ Failed to send Telegram message:", str(e))
 
-def send_file(path):
+def send_file(path: Path):
+    """Send a file to Telegram group (summary.json)."""
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendDocument"
-    with open(path, "rb") as f:
-        r = requests.post(url, data={"chat_id": CHAT_ID}, files={"document": f})
-    print(f"DEBUG send_file response for {path}:", r.text)
-    return r
+    try:
+        with open(path, "rb") as f:
+            r = requests.post(url, data={"chat_id": CHAT_ID}, files={"document": f})
+            r.raise_for_status()
+    except Exception as e:
+        print("⚠️ Failed to send Telegram file:", str(e))
 
 # === GOOGLE SHEETS LOADER ===
 def load_sheet(sheet_id, range_name):
+    """Load OHLC data from Google Sheet using service account creds."""
     with open("creds.json", "w") as f:
         f.write(os.getenv("GOOGLE_CREDS"))
 
@@ -59,7 +63,6 @@ def load_intraday_epoch_s(df_in, tz=TZ, time_col="time"):
     df = df_in.copy()
     df[time_col] = df[time_col].astype(str).str.strip().astype(float)
     t = pd.to_datetime(df[time_col], unit="s", utc=True, errors="coerce")
-    print("DEBUG Parsed time range:", t.min(), "to", t.max())
 
     if t.isna().all():
         raise ValueError("All time values failed to parse. Check 'time' column.")
@@ -123,11 +126,9 @@ def label_walkforward_quartiles_generic(df_in, range_col, vol_col, out_prefix='r
 
 # === MAIN ===
 def run_daily():
-    # Load data from Google Sheets
     df_raw = load_sheet(SHEET_ID, RANGE_NAME)
     df = load_intraday_epoch_s(df_raw, tz=TZ)
 
-    # Build features
     daily = daily_prevday_features(df, tz=TZ)
     day_key = df.index.normalize()
     df_roll = df.copy()
@@ -142,7 +143,6 @@ def run_daily():
         tz=TZ
     )
 
-    # Build last 10 regimes with values
     day = df_roll.index.normalize()
     daily_lbl = (
         df_roll.assign(_day=day)
@@ -158,7 +158,6 @@ def run_daily():
     for idx, row in last10.iterrows():
         cell = (int(row["roll_Range_Q"]), int(row["roll_Vol_Q"]))
         allow_trade = cell not in EXCLUDED_CELLS
-
         rec = {
             "date": idx.strftime("%Y-%m-%d"),
             "roll_Range_Q": int(row["roll_Range_Q"]),
@@ -171,15 +170,12 @@ def run_daily():
         last10_records.append(rec)
 
     summary = {"last10": last10_records}
-
-    # Save JSON
     summary_path = OUT_DIR / "summary.json"
     summary_path.write_text(json.dumps(summary, indent=2))
 
-    # === Telegram text summary (last 3 days) ===
-    last_days = last10_records[-3:]  # last 3 days
+    # Send last 3 days as text
+    last_days = last10_records[-3:]
     msg_lines = ["📊 Regime Bot Update\n"]
-
     for day in last_days:
         trade_msg = "✅ TRADE" if day["trade"] else "🚫 NO TRADE"
         msg_lines.append(
@@ -188,7 +184,6 @@ def run_daily():
             f"   Range: {day['range_value']:.4f}\n"
             f"   Vol:   {day['vol_value']:.4f}\n"
         )
-
     text_summary = "\n".join(msg_lines)
 
     send_message(text_summary)
@@ -196,11 +191,10 @@ def run_daily():
 
 if __name__ == "__main__":
     try:
-        send_message("⏳ Starting daily run (Google Sheets)...")
         run_daily()
+        print("✅ Daily report completed and sent to Telegram.")
     except Exception as e:
         import traceback
-        error_msg = f"❌ Daily run failed:\n{type(e).__name__}: {str(e)}"
-        send_message(error_msg[:4000])
-        print(traceback.format_exc())
+        send_message(f"❌ Daily run failed: {type(e).__name__}: {str(e)}")
+        print("⚠️ Error in run_daily:\n", traceback.format_exc())
         raise
