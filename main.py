@@ -2,8 +2,7 @@ import os, json, numpy as np, pandas as pd
 from pathlib import Path
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
-from googleapiclient.http import MediaIoBaseDownload
-import io, requests
+import requests
 
 # === TELEGRAM ===
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
@@ -63,17 +62,18 @@ def load_intraday_epoch_s(df_in, tz=TZ, time_col="time", cutoff=None):
     if time_col not in df.columns:
         raise ValueError(f"Expected a '{time_col}' column in the data")
 
-    # Parse epoch seconds → datetime index
-    t = pd.to_datetime(df[time_col].astype(float), unit="s", utc=True, errors="coerce")
+    # ✅ Force parse as epoch seconds
+    df[time_col] = df[time_col].astype(float)
+    t = pd.to_datetime(df[time_col], unit="s", utc=True, errors="coerce")
 
     df = df.drop(columns=[time_col]).set_index(t).sort_index()
+
     if df.index.tz is None:
         df.index = df.index.tz_localize("UTC")
     df = df.tz_convert(tz)
 
     df.columns = [c.lower() for c in df.columns]
     return df
-
 
 def daily_prevday_features(df, tz=TZ, atr_n=14, vol_n=20):
     day = (df.index if df.index.tz else df.index.tz_localize(tz)).tz_convert(tz).normalize()
@@ -100,6 +100,8 @@ def label_walkforward_quartiles_generic(df_in, range_col, vol_col, out_prefix='r
     df[out_V] = pd.Series(pd.NA, index=df.index, dtype='Int64')
     idx_local = df.index if df.index.tz else df.index.tz_localize(tz)
     idx_local = idx_local.tz_convert(tz)
+    if idx_local.empty:
+        raise ValueError("Datetime index is empty — check your 'time' column parsing.")
     first_ms  = pd.Timestamp(idx_local.min().year, idx_local.min().month, 1, tz=tz)
     last_ms   = pd.Timestamp(idx_local.max().year,  idx_local.max().month,  1, tz=tz)
     month_starts = pd.date_range(first_ms, last_ms, freq='MS', tz=tz)
