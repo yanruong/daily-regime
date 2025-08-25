@@ -1,9 +1,9 @@
 import os, json, numpy as np, pandas as pd
 from pathlib import Path
-from pydrive2.auth import GoogleAuth
-from pydrive2.drive import GoogleDrive
-from oauth2client.service_account import ServiceAccountCredentials
-import requests
+from google.oauth2 import service_account
+from googleapiclient.discovery import build
+from googleapiclient.http import MediaIoBaseDownload
+import io, requests
 
 # === TELEGRAM ===
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
@@ -18,18 +18,23 @@ def send_file(path):
     with open(path, "rb") as f:
         requests.post(url, data={"chat_id": CHAT_ID}, files={"document": f})
 
-# === GOOGLE DRIVE (Service Account) ===
-def get_drive():
-    # Write GOOGLE_CREDS secret into creds.json
-    with open("creds.json", "w") as f:
+# === GOOGLE DRIVE (Service Account with googleapiclient) ===
+def download_from_drive(file_id, filename):
+    creds_path = "creds.json"
+    with open(creds_path, "w") as f:
         f.write(os.getenv("GOOGLE_CREDS"))
 
-    gauth = GoogleAuth()
-    gauth.credentials = ServiceAccountCredentials.from_json_keyfile_name(
-        "creds.json",
-        scopes=["https://www.googleapis.com/auth/drive"]
+    creds = service_account.Credentials.from_service_account_file(
+        creds_path, scopes=["https://www.googleapis.com/auth/drive"]
     )
-    return GoogleDrive(gauth)
+    service = build("drive", "v3", credentials=creds)
+
+    request = service.files().get_media(fileId=file_id)
+    fh = io.FileIO(filename, "wb")
+    downloader = MediaIoBaseDownload(fh, request)
+    done = False
+    while not done:
+        status, done = downloader.next_chunk()
 
 # === CONFIG ===
 TZ = "Asia/Singapore"
@@ -38,7 +43,7 @@ OUT_DIR = Path("outputs")
 OUT_DIR.mkdir(exist_ok=True)
 MIN_HIST_DAYS = 60
 
-# === FUNCTIONS (your regime analysis, same as before) ===
+# === FUNCTIONS (same as before) ===
 def load_intraday_epoch_s(df_path, tz=TZ, time_col="time", unit="s", cutoff=None):
     df = pd.read_csv(df_path)
     t  = pd.to_datetime(df[time_col], unit=unit, utc=True, errors="coerce")
@@ -103,11 +108,8 @@ def last_n_from_labels(df_roll, n=10, tz=TZ):
 
 # === MAIN ===
 def run_daily():
-    drive = get_drive()
-
-    # Download file from Drive
-    f = drive.CreateFile({"id": FILE_ID})
-    f.GetContentFile("new.csv")
+    # Download CSV from Drive
+    download_from_drive(FILE_ID, "new.csv")
 
     # Build features
     df = load_intraday_epoch_s("new.csv", tz=TZ)
