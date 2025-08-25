@@ -130,32 +130,36 @@ def run_daily():
     # Last 10 regimes
     last10 = last_n_from_labels(df_roll, n=10)
 
-    # Option 1: simplest — reset index so dates become a column
-    last10_reset = last10.reset_index()
-    summary = {"last10": last10_reset.to_dict(orient="records")}
-    
+    # Convert last10 safely to JSON
+    last10_records = []
+    for idx, row in last10.iterrows():
+        rec = {"date": idx.strftime("%Y-%m-%d")}
+        for col, val in row.items():
+            if pd.isna(val):
+                rec[col] = None
+            elif isinstance(val, (np.integer, int)):
+                rec[col] = int(val)
+            else:
+                rec[col] = str(val)
+        last10_records.append(rec)
+
     # Save outputs
     summary_path = OUT_DIR / "summary.json"
     snapshot_path = OUT_DIR / "df_roll_snapshot.parquet"
-    
+
+    summary = {"last10": last10_records}
     summary_path.write_text(json.dumps(summary, indent=2))
-    
+
     cols_to_save = ['roll_Range_Q','roll_Vol_Q','rolling_range_prevday','daily_vol20_prevday']
     (df_roll[cols_to_save]
      .reset_index()
      .rename(columns={'index':'time'})
      .to_parquet(snapshot_path, index=False))
-    
-    
-        # Send to Telegram
-        send_message("✅ Daily regime analysis complete")
-        send_file(summary_path)
-        send_file(snapshot_path)
 
-if __name__ == "__main__":
-    send_message("⏳ Starting daily run...")
-    run_daily()
-
+    # Send to Telegram
+    send_message("✅ Daily regime analysis complete")
+    send_file(summary_path)
+    send_file(snapshot_path)
 
 if __name__ == "__main__":
     send_message("⏳ Starting daily run...")
