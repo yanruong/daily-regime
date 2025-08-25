@@ -9,21 +9,20 @@ import io, requests
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 CHAT_ID = os.getenv("CHAT_ID")
 
-# Debug print secrets presence (not actual token!)
 print("DEBUG: TELEGRAM_TOKEN set?", TELEGRAM_TOKEN is not None)
 print("DEBUG: CHAT_ID =", CHAT_ID)
 
 def send_message(msg):
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
     r = requests.post(url, data={"chat_id": CHAT_ID, "text": msg})
-    print("DEBUG send_message response:", r.text)   # DEBUG
+    print("DEBUG send_message response:", r.text)
     return r
 
 def send_file(path):
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendDocument"
     with open(path, "rb") as f:
         r = requests.post(url, data={"chat_id": CHAT_ID}, files={"document": f})
-    print(f"DEBUG send_file response for {path}:", r.text)   # DEBUG
+    print(f"DEBUG send_file response for {path}:", r.text)
     return r
 
 # === GOOGLE DRIVE ===
@@ -104,16 +103,6 @@ def label_walkforward_quartiles_generic(df_in, range_col, vol_col, out_prefix='r
         df.loc[sel, out_V] = pd.cut(df.loc[sel,  vol_col], v_bins,   labels=False, include_lowest=True).astype('Int64')
     return df
 
-def last_n_from_labels(df_roll, n=10, tz=TZ):
-    day = (df_roll.index if df_roll.index.tz else df_roll.index.tz_localize(tz)).tz_convert(tz).normalize()
-    daily_lbl = (df_roll.assign(_day=day)
-                   .groupby('_day')[['roll_Range_Q','roll_Vol_Q']]
-                   .first()
-                   .dropna()
-                   .astype('Int64'))
-    daily_lbl['label'] = daily_lbl.apply(lambda r: f"R{int(r['roll_Range_Q'])}/V{int(r['roll_Vol_Q'])}", axis=1)
-    return daily_lbl.tail(n)
-
 # === MAIN ===
 def run_daily():
     # Download file from Drive
@@ -135,33 +124,36 @@ def run_daily():
         tz=TZ
     )
 
-    # Last 10 regimes
-    # Last 10 regimes
-    last10 = last_n_from_labels(df_roll, n=10)
-    
-    # Grab the daily numeric values
-    daily_values = daily[['rolling_range_prevday','daily_vol20_prevday']]
-    
+    # === Build last 10 regimes with values ===
+    day = df_roll.index.normalize()
+    daily_lbl = (
+        df_roll.assign(_day=day)
+               .groupby('_day')[['roll_Range_Q','roll_Vol_Q','rolling_range_prevday','daily_vol20_prevday']]
+               .first()
+               .dropna()
+               .astype({'roll_Range_Q':'Int64','roll_Vol_Q':'Int64'})
+    )
+    daily_lbl['label'] = daily_lbl.apply(lambda r: f"R{int(r['roll_Range_Q'])}/V{int(r['roll_Vol_Q'])}", axis=1)
+    last10 = daily_lbl.tail(10)
+
     last10_records = []
     for idx, row in last10.iterrows():
-        rec = {"date": idx.strftime("%Y-%m-%d")}
-        rec["roll_Range_Q"] = int(row["roll_Range_Q"])
-        rec["roll_Vol_Q"]   = int(row["roll_Vol_Q"])
-        rec["label"]        = row["label"]
-    
-        # attach numeric values
-        if idx in daily_values.index:
-            rec["range_value"] = float(daily_values.loc[idx, "rolling_range_prevday"])
-            rec["vol_value"]   = float(daily_values.loc[idx, "daily_vol20_prevday"])
-        else:
-            rec["range_value"] = None
-            rec["vol_value"]   = None
-    
+        rec = {
+            "date": idx.strftime("%Y-%m-%d"),
+            "roll_Range_Q": int(row["roll_Range_Q"]),
+            "roll_Vol_Q": int(row["roll_Vol_Q"]),
+            "label": row["label"],
+            "range_value": None if pd.isna(row["rolling_range_prevday"]) else float(row["rolling_range_prevday"]),
+            "vol_value": None if pd.isna(row["daily_vol20_prevday"]) else float(row["daily_vol20_prevday"])
+        }
         last10_records.append(rec)
-    
-    summary = {"last10": last10_records}
-    summary_path.write_text(json.dumps(summary, indent=2))
 
+    summary = {"last10": last10_records}
+
+    # Save outputs
+    summary_path = OUT_DIR / "summary.json"
+    snapshot_path = OUT_DIR / "df_roll_snapshot.parquet"
+    summary_path.write_text(json.dumps(summary, indent=2))
 
     cols_to_save = ['roll_Range_Q','roll_Vol_Q','rolling_range_prevday','daily_vol20_prevday']
     (df_roll[cols_to_save]
@@ -172,6 +164,7 @@ def run_daily():
     # Send to Telegram
     send_message("✅ Daily regime analysis complete")
     send_file(summary_path)
+    send_file(snapshot_path)
 
 if __name__ == "__main__":
     send_message("⏳ Starting daily run...")
