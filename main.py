@@ -64,7 +64,7 @@ def load_intraday_epoch_s(df_in, tz=TZ, time_col="time", cutoff=None):
 
     # ✅ Force parse as epoch seconds
     df[time_col] = df[time_col].astype(str).str.strip().astype(float)
-    t = pd.to_datetime(df[time_col], unit="s", utc=True, errors="coerce")
+    t = pd.to_datetime(df[time_col], utc=True, errors="coerce")
     print("DEBUG Parsed time range:", t.min(), "to", t.max())
 
     if t.isna().all():
