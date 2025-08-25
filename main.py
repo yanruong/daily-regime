@@ -6,7 +6,7 @@ import requests
 
 # === TELEGRAM ===
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
-CHAT_ID = os.getenv("CHAT_ID")
+CHAT_ID = os.getenv("CHAT_ID")  # now set to your GROUP ID in GitHub Secrets
 
 print("DEBUG: TELEGRAM_TOKEN set?", TELEGRAM_TOKEN is not None)
 print("DEBUG: CHAT_ID =", CHAT_ID)
@@ -51,11 +51,12 @@ OUT_DIR = Path("outputs")
 OUT_DIR.mkdir(exist_ok=True)
 MIN_HIST_DAYS = 60
 
+# Excluded regimes → NO TRADE
+EXCLUDED_CELLS = {(0,1), (2,0), (1,0), (3,2), (1,2)}
+
 # === FUNCTIONS ===
 def load_intraday_epoch_s(df_in, tz=TZ, time_col="time"):
     df = df_in.copy()
-
-    # time → datetime
     df[time_col] = df[time_col].astype(str).str.strip().astype(float)
     t = pd.to_datetime(df[time_col], unit="s", utc=True, errors="coerce")
     print("DEBUG Parsed time range:", t.min(), "to", t.max())
@@ -68,7 +69,6 @@ def load_intraday_epoch_s(df_in, tz=TZ, time_col="time"):
         df.index = df.index.tz_localize("UTC")
     df = df.tz_convert(tz)
 
-    # force OHLC numeric
     for col in ["open","high","low","close"]:
         if col in df.columns:
             df[col] = pd.to_numeric(df[col], errors="coerce")
@@ -156,34 +156,51 @@ def run_daily():
 
     last10_records = []
     for idx, row in last10.iterrows():
+        cell = (int(row["roll_Range_Q"]), int(row["roll_Vol_Q"]))
+        allow_trade = cell not in EXCLUDED_CELLS
+
         rec = {
             "date": idx.strftime("%Y-%m-%d"),
             "roll_Range_Q": int(row["roll_Range_Q"]),
             "roll_Vol_Q": int(row["roll_Vol_Q"]),
             "label": row["label"],
             "range_value": None if pd.isna(row["rolling_range_prevday"]) else float(row["rolling_range_prevday"]),
-            "vol_value": None if pd.isna(row["daily_vol20_prevday"]) else float(row["daily_vol20_prevday"])
+            "vol_value": None if pd.isna(row["daily_vol20_prevday"]) else float(row["daily_vol20_prevday"]),
+            "trade": allow_trade
         }
         last10_records.append(rec)
 
     summary = {"last10": last10_records}
 
-    # Save outputs
+    # Save JSON
     summary_path = OUT_DIR / "summary.json"
-    snapshot_path = OUT_DIR / "df_roll_snapshot.parquet"
     summary_path.write_text(json.dumps(summary, indent=2))
 
-    cols_to_save = ['roll_Range_Q','roll_Vol_Q','rolling_range_prevday','daily_vol20_prevday']
-    (df_roll[cols_to_save]
-     .reset_index()
-     .rename(columns={'index':'time'})
-     .to_parquet(snapshot_path, index=False))
+    # === Telegram text summary (last 3 days) ===
+    last_days = last10_records[-3:]  # last 3 days
+    msg_lines = ["📊 Regime Bot Update\n"]
 
-    # Send to Telegram
-    send_message("✅ Daily regime analysis complete (from Google Sheets)")
+    for day in last_days:
+        trade_msg = "✅ TRADE" if day["trade"] else "🚫 NO TRADE"
+        msg_lines.append(
+            f"📅 {day['date']} → {trade_msg}\n"
+            f"   Regime: {day['label']}\n"
+            f"   Range: {day['range_value']:.4f}\n"
+            f"   Vol:   {day['vol_value']:.4f}\n"
+        )
+
+    text_summary = "\n".join(msg_lines)
+
+    send_message(text_summary)
     send_file(summary_path)
-    send_file(snapshot_path)
 
 if __name__ == "__main__":
-    send_message("⏳ Starting daily run (Google Sheets)...")
-    run_daily()
+    try:
+        send_message("⏳ Starting daily run (Google Sheets)...")
+        run_daily()
+    except Exception as e:
+        import traceback
+        error_msg = f"❌ Daily run failed:\n{type(e).__name__}: {str(e)}"
+        send_message(error_msg[:4000])
+        print(traceback.format_exc())
+        raise
