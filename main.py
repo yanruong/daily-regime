@@ -5,6 +5,19 @@ from pydrive2.drive import GoogleDrive
 from pydrive2.auth import GoogleAuth, ServiceAccountCredentials
 import requests
 
+
+def get_drive():
+    # Write GOOGLE_CREDS secret into creds.json
+    with open("creds.json", "w") as f:
+        f.write(os.getenv("GOOGLE_CREDS"))
+
+    gauth = GoogleAuth()
+    gauth.credentials = ServiceAccountCredentials.from_json_keyfile_name(
+        "creds.json",
+        scopes=["https://www.googleapis.com/auth/drive"]
+    )
+    return GoogleDrive(gauth)
+
 # === TELEGRAM ===
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 CHAT_ID = os.getenv("CHAT_ID")
@@ -18,20 +31,16 @@ def send_file(path):
     with open(path, "rb") as f:
         requests.post(url, data={"chat_id": CHAT_ID}, files={"document": f})
 
-# === GOOGLE DRIVE ===
 def get_drive():
-    # write service account JSON to creds.json
+    # Write GOOGLE_CREDS secret into creds.json
     with open("creds.json", "w") as f:
         f.write(os.getenv("GOOGLE_CREDS"))
 
     gauth = GoogleAuth()
-
-    # Load service account creds directly
     gauth.credentials = ServiceAccountCredentials.from_json_keyfile_name(
         "creds.json",
-        scopes=['https://www.googleapis.com/auth/drive']
+        scopes=["https://www.googleapis.com/auth/drive"]
     )
-
     return GoogleDrive(gauth)
 
 
