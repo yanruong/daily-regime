@@ -128,13 +128,21 @@ def run_daily():
     )
 
     # Last 10 regimes
+    # Last 10 regimes
     last10 = last_n_from_labels(df_roll, n=10)
+
+    # Convert index to string so JSON accepts it
+    last10.index = last10.index.astype(str)
 
     # Save outputs
     summary_path = OUT_DIR / "summary.json"
     snapshot_path = OUT_DIR / "df_roll_snapshot.parquet"
+    
     summary = {"last10": last10.to_dict(orient="index")}
     summary_path.write_text(json.dumps(summary, indent=2))
+
+
+    # Save outputs
     cols_to_save = ['roll_Range_Q','roll_Vol_Q','rolling_range_prevday','daily_vol20_prevday']
     (df_roll[cols_to_save]
      .reset_index()
