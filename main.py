@@ -18,14 +18,14 @@ def send_file(path):
     with open(path, "rb") as f:
         requests.post(url, data={"chat_id": CHAT_ID}, files={"document": f})
 
-# === GOOGLE DRIVE (Service Account with googleapiclient) ===
+# === GOOGLE DRIVE ===
 def download_from_drive(file_id, filename):
-    creds_path = "creds.json"
-    with open(creds_path, "w") as f:
+    with open("creds.json", "w") as f:
         f.write(os.getenv("GOOGLE_CREDS"))
 
     creds = service_account.Credentials.from_service_account_file(
-        creds_path, scopes=["https://www.googleapis.com/auth/drive"]
+        "creds.json",
+        scopes=["https://www.googleapis.com/auth/drive"]
     )
     service = build("drive", "v3", credentials=creds)
 
@@ -43,7 +43,7 @@ OUT_DIR = Path("outputs")
 OUT_DIR.mkdir(exist_ok=True)
 MIN_HIST_DAYS = 60
 
-# === FUNCTIONS (same as before) ===
+# === FUNCTIONS (regime analysis) ===
 def load_intraday_epoch_s(df_path, tz=TZ, time_col="time", unit="s", cutoff=None):
     df = pd.read_csv(df_path)
     t  = pd.to_datetime(df[time_col], unit=unit, utc=True, errors="coerce")
@@ -108,7 +108,7 @@ def last_n_from_labels(df_roll, n=10, tz=TZ):
 
 # === MAIN ===
 def run_daily():
-    # Download CSV from Drive
+    # Download file from Drive
     download_from_drive(FILE_ID, "new.csv")
 
     # Build features
@@ -145,6 +145,11 @@ def run_daily():
     send_message("✅ Daily regime analysis complete")
     send_file(summary_path)
     send_file(snapshot_path)
+
+if __name__ == "__main__":
+    send_message("⏳ Starting daily run...")
+    run_daily()
+
 
 if __name__ == "__main__":
     send_message("⏳ Starting daily run...")
