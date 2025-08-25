@@ -1,0 +1,150 @@
+import os, json, numpy as np, pandas as pd
+from pathlib import Path
+from pydrive2.auth import GoogleAuth
+from pydrive2.drive import GoogleDrive
+import requests
+
+# === TELEGRAM ===
+TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
+CHAT_ID = os.getenv("CHAT_ID")
+
+def send_message(msg):
+    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
+    requests.post(url, data={"chat_id": CHAT_ID, "text": msg})
+
+def send_file(path):
+    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendDocument"
+    with open(path, "rb") as f:
+        requests.post(url, data={"chat_id": CHAT_ID}, files={"document": f})
+
+# === GOOGLE DRIVE ===
+def get_drive():
+    with open("creds.json", "w") as f:
+        f.write(os.getenv("GOOGLE_CREDS"))
+    gauth = GoogleAuth()
+    gauth.LoadCredentialsFile("creds.json")
+    if not gauth.credentials:
+        gauth.LocalWebserverAuth()
+    elif gauth.access_token_expired:
+        gauth.Refresh()
+    else:
+        gauth.Authorize()
+    gauth.SaveCredentialsFile("creds.json")
+    return GoogleDrive(gauth)
+
+# === CONFIG ===
+TZ = "Asia/Singapore"
+FILE_ID = "1P0uoh8nRHphCXIYzcdLRCm-WAKZm640i"  # your Drive file ID
+OUT_DIR = Path("outputs")
+OUT_DIR.mkdir(exist_ok=True)
+MIN_HIST_DAYS = 60
+
+# === FUNCTIONS (adapted from your Colab) ===
+def load_intraday_epoch_s(df_path, tz=TZ, time_col="time", unit="s", cutoff=None):
+    df = pd.read_csv(df_path)
+    t  = pd.to_datetime(df[time_col], unit=unit, utc=True, errors="coerce")
+    df = df.drop(columns=[time_col]).set_index(t).sort_index()
+    if df.index.tz is None: df.index = df.index.tz_localize("UTC")
+    df = df.tz_convert(tz)
+    df.columns = [c.lower() for c in df.columns]
+    return df
+
+def daily_prevday_features(df, tz=TZ, atr_n=14, vol_n=20):
+    day = (df.index if df.index.tz else df.index.tz_localize(tz)).tz_convert(tz).normalize()
+    g = (df.assign(_day=day)
+           .groupby('_day')
+           .agg(high=('high','max'), low=('low','min'), close=('close','last'))
+           .dropna())
+    g['ret']   = g['close'].pct_change()
+    g['vol20'] = g['ret'].rolling(vol_n, min_periods=vol_n).std()
+    prev_c = g['close'].shift(1)
+    tr = pd.concat([(g['high']-g['low']).abs(),
+                    (g['high']-prev_c).abs(),
+                    (g['low'] -prev_c).abs()], axis=1).max(axis=1)
+    atr = tr.ewm(alpha=1/atr_n, adjust=False).mean()
+    g['atr_pct'] = atr / g['close'].replace(0, np.nan)
+    g['rolling_range_prevday'] = g['atr_pct'].shift(1)
+    g['daily_vol20_prevday']   = g['vol20'].shift(1)
+    return g[['rolling_range_prevday','daily_vol20_prevday']]
+
+def label_walkforward_quartiles_generic(df_in, range_col, vol_col, out_prefix='roll_', min_hist_days=MIN_HIST_DAYS, tz=TZ):
+    df = df_in.copy()
+    out_R, out_V = f'{out_prefix}Range_Q', f'{out_prefix}Vol_Q'
+    df[out_R] = pd.Series(pd.NA, index=df.index, dtype='Int64')
+    df[out_V] = pd.Series(pd.NA, index=df.index, dtype='Int64')
+    idx_local = df.index if df.index.tz else df.index.tz_localize(tz)
+    idx_local = idx_local.tz_convert(tz)
+    first_ms  = pd.Timestamp(idx_local.min().year, idx_local.min().month, 1, tz=tz)
+    last_ms   = pd.Timestamp(idx_local.max().year,  idx_local.max().month,  1, tz=tz)
+    month_starts = pd.date_range(first_ms, last_ms, freq='MS', tz=tz)
+    for i in range(1, len(month_starts)):
+        m0 = month_starts[i]
+        m1 = month_starts[i+1] if i+1 < len(month_starts) else (m0 + pd.offsets.MonthBegin(1))
+        hist = df.loc[:m0 - pd.Timedelta('1ns'), [range_col, vol_col]].dropna()
+        if hist.index.normalize().nunique() < min_hist_days:
+            continue
+        rq = hist[range_col].quantile([.25,.50,.75]).to_list()
+        vq = hist[vol_col].quantile([.25,.50,.75]).to_list()
+        r_bins = np.array([-np.inf, *rq, np.inf], float)
+        v_bins = np.array([-np.inf, *vq, np.inf], float)
+        sel = (df.index >= m0) & (df.index < m1)
+        df.loc[sel, out_R] = pd.cut(df.loc[sel, range_col], r_bins, labels=False, include_lowest=True).astype('Int64')
+        df.loc[sel, out_V] = pd.cut(df.loc[sel,  vol_col], v_bins,   labels=False, include_lowest=True).astype('Int64')
+    return df
+
+def last_n_from_labels(df_roll, n=10, tz=TZ):
+    day = (df_roll.index if df_roll.index.tz else df_roll.index.tz_localize(tz)).tz_convert(tz).normalize()
+    daily_lbl = (df_roll.assign(_day=day)
+                   .groupby('_day')[['roll_Range_Q','roll_Vol_Q']]
+                   .first()
+                   .dropna()
+                   .astype('Int64'))
+    daily_lbl['label'] = daily_lbl.apply(lambda r: f"R{int(r['roll_Range_Q'])}/V{int(r['roll_Vol_Q'])}", axis=1)
+    return daily_lbl.tail(n)
+
+# === MAIN ===
+def run_daily():
+    drive = get_drive()
+
+    # Download file from Drive
+    f = drive.CreateFile({"id": FILE_ID})
+    f.GetContentFile("new.csv")
+
+    # Build features
+    df = load_intraday_epoch_s("new.csv", tz=TZ)
+    daily = daily_prevday_features(df, tz=TZ)
+    day_key = df.index.normalize()
+    df_roll = df.copy()
+    df_roll['rolling_range_prevday'] = day_key.map(daily['rolling_range_prevday'])
+    df_roll['daily_vol20_prevday']   = day_key.map(daily['daily_vol20_prevday'])
+    df_roll = label_walkforward_quartiles_generic(
+        df_roll,
+        range_col='rolling_range_prevday',
+        vol_col='daily_vol20_prevday',
+        out_prefix='roll_',
+        min_hist_days=MIN_HIST_DAYS,
+        tz=TZ
+    )
+
+    # Last 10 regimes
+    last10 = last_n_from_labels(df_roll, n=10)
+
+    # Save outputs
+    summary_path = OUT_DIR / "summary.json"
+    snapshot_path = OUT_DIR / "df_roll_snapshot.parquet"
+    summary = {"last10": last10.to_dict(orient="index")}
+    summary_path.write_text(json.dumps(summary, indent=2))
+    cols_to_save = ['roll_Range_Q','roll_Vol_Q','rolling_range_prevday','daily_vol20_prevday']
+    (df_roll[cols_to_save]
+     .reset_index()
+     .rename(columns={'index':'time'})
+     .to_parquet(snapshot_path, index=False))
+
+    # Send to Telegram
+    send_message("✅ Daily regime analysis complete")
+    send_file(summary_path)
+    send_file(snapshot_path)
+
+if __name__ == "__main__":
+    send_message("⏳ Starting daily run...")
+    run_daily()
