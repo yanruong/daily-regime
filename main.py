@@ -9,17 +9,22 @@ import io, requests
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 CHAT_ID = os.getenv("CHAT_ID")
 
+# Debug print secrets presence (not actual token!)
 print("DEBUG: TELEGRAM_TOKEN set?", TELEGRAM_TOKEN is not None)
 print("DEBUG: CHAT_ID =", CHAT_ID)
 
 def send_message(msg):
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-    requests.post(url, data={"chat_id": CHAT_ID, "text": msg})
+    r = requests.post(url, data={"chat_id": CHAT_ID, "text": msg})
+    print("DEBUG send_message response:", r.text)   # DEBUG
+    return r
 
 def send_file(path):
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendDocument"
     with open(path, "rb") as f:
-        requests.post(url, data={"chat_id": CHAT_ID}, files={"document": f})
+        r = requests.post(url, data={"chat_id": CHAT_ID}, files={"document": f})
+    print(f"DEBUG send_file response for {path}:", r.text)   # DEBUG
+    return r
 
 # === GOOGLE DRIVE ===
 def download_from_drive(file_id, filename):
@@ -41,7 +46,7 @@ def download_from_drive(file_id, filename):
 
 # === CONFIG ===
 TZ = "Asia/Singapore"
-FILE_ID = "1P0uoh8nRHphCXIYzcdLRCm-WAKZm640i"  # your Drive file ID
+FILE_ID = "1P0uoh8nRHphCXIYzcdLRCm-WAKZm640i"
 OUT_DIR = Path("outputs")
 OUT_DIR.mkdir(exist_ok=True)
 MIN_HIST_DAYS = 60
