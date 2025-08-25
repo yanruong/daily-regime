@@ -2,7 +2,7 @@ name: Daily Report
 
 on:
   schedule:
-    - cron: "*/1 * * * *"   # every 5 minutes (for testing)
+    - cron: "*/0 2 * * 1-5"   # every 5 minutes (for testing)
   workflow_dispatch:
 
 jobs:
