@@ -25,14 +25,13 @@ def send_file(path):
     print(f"DEBUG send_file response for {path}:", r.text)
     return r
 
-# === GOOGLE DRIVE ===
+# === GOOGLE DRIVE LOADER ===
 def download_from_drive(file_id, filename):
     with open("creds.json", "w") as f:
         f.write(os.getenv("GOOGLE_CREDS"))
 
     creds = service_account.Credentials.from_service_account_file(
-        "creds.json",
-        scopes=["https://www.googleapis.com/auth/drive"]
+        "creds.json", scopes=["https://www.googleapis.com/auth/drive"]
     )
     service = build("drive", "v3", credentials=creds)
 
@@ -45,18 +44,32 @@ def download_from_drive(file_id, filename):
 
 # === CONFIG ===
 TZ = "Asia/Singapore"
-FILE_ID = "1P0uoh8nRHphCXIYzcdLRCm-WAKZm640i"
+FILE_ID = "1P0uoh8nRHphCXIYzcdLRCm-WAKZm640i"   # <== replace with your Drive file ID
 OUT_DIR = Path("outputs")
 OUT_DIR.mkdir(exist_ok=True)
 MIN_HIST_DAYS = 60
 
 # === FUNCTIONS (regime analysis) ===
-def load_intraday_epoch_s(df_path, tz=TZ, time_col="time", unit="s", cutoff=None):
+def load_intraday_epoch_s(df_path, tz=TZ, time_col="time", cutoff=None):
     df = pd.read_csv(df_path)
-    t  = pd.to_datetime(df[time_col], unit=unit, utc=True, errors="coerce")
+
+    if time_col not in df.columns:
+        raise ValueError(f"Expected a '{time_col}' column in the data")
+
+    # ✅ Epoch seconds parse
+    df[time_col] = df[time_col].astype(str).str.strip().astype(float)
+    t = pd.to_datetime(df[time_col], unit="s", utc=True, errors="coerce")
+    print("DEBUG Parsed time range:", t.min(), "to", t.max())
+
+    if t.isna().all():
+        raise ValueError("All time values failed to parse. Check your Drive CSV 'time' column.")
+
     df = df.drop(columns=[time_col]).set_index(t).sort_index()
-    if df.index.tz is None: df.index = df.index.tz_localize("UTC")
+
+    if df.index.tz is None:
+        df.index = df.index.tz_localize("UTC")
     df = df.tz_convert(tz)
+
     df.columns = [c.lower() for c in df.columns]
     return df
 
@@ -85,6 +98,8 @@ def label_walkforward_quartiles_generic(df_in, range_col, vol_col, out_prefix='r
     df[out_V] = pd.Series(pd.NA, index=df.index, dtype='Int64')
     idx_local = df.index if df.index.tz else df.index.tz_localize(tz)
     idx_local = idx_local.tz_convert(tz)
+    if idx_local.empty:
+        raise ValueError("Datetime index is empty — check your 'time' column parsing.")
     first_ms  = pd.Timestamp(idx_local.min().year, idx_local.min().month, 1, tz=tz)
     last_ms   = pd.Timestamp(idx_local.max().year,  idx_local.max().month,  1, tz=tz)
     month_starts = pd.date_range(first_ms, last_ms, freq='MS', tz=tz)
@@ -107,9 +122,9 @@ def label_walkforward_quartiles_generic(df_in, range_col, vol_col, out_prefix='r
 def run_daily():
     # Download file from Drive
     download_from_drive(FILE_ID, "new.csv")
+    df = load_intraday_epoch_s("new.csv", tz=TZ)
 
     # Build features
-    df = load_intraday_epoch_s("new.csv", tz=TZ)
     daily = daily_prevday_features(df, tz=TZ)
     day_key = df.index.normalize()
     df_roll = df.copy()
@@ -162,10 +177,10 @@ def run_daily():
      .to_parquet(snapshot_path, index=False))
 
     # Send to Telegram
-    send_message("✅ Daily regime analysis complete")
+    send_message("✅ Daily regime analysis complete (from Google Drive CSV)")
     send_file(summary_path)
     send_file(snapshot_path)
 
 if __name__ == "__main__":
-    send_message("⏳ Starting daily run...")
+    send_message("⏳ Starting daily run (Google Drive CSV)...")
     run_daily()
