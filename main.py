@@ -2,21 +2,8 @@ import os, json, numpy as np, pandas as pd
 from pathlib import Path
 from pydrive2.auth import GoogleAuth
 from pydrive2.drive import GoogleDrive
-from pydrive2.auth import GoogleAuth, ServiceAccountCredentials
+from oauth2client.service_account import ServiceAccountCredentials
 import requests
-
-
-def get_drive():
-    # Write GOOGLE_CREDS secret into creds.json
-    with open("creds.json", "w") as f:
-        f.write(os.getenv("GOOGLE_CREDS"))
-
-    gauth = GoogleAuth()
-    gauth.credentials = ServiceAccountCredentials.from_json_keyfile_name(
-        "creds.json",
-        scopes=["https://www.googleapis.com/auth/drive"]
-    )
-    return GoogleDrive(gauth)
 
 # === TELEGRAM ===
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
@@ -31,6 +18,7 @@ def send_file(path):
     with open(path, "rb") as f:
         requests.post(url, data={"chat_id": CHAT_ID}, files={"document": f})
 
+# === GOOGLE DRIVE (Service Account) ===
 def get_drive():
     # Write GOOGLE_CREDS secret into creds.json
     with open("creds.json", "w") as f:
@@ -43,7 +31,6 @@ def get_drive():
     )
     return GoogleDrive(gauth)
 
-
 # === CONFIG ===
 TZ = "Asia/Singapore"
 FILE_ID = "1P0uoh8nRHphCXIYzcdLRCm-WAKZm640i"  # your Drive file ID
@@ -51,7 +38,7 @@ OUT_DIR = Path("outputs")
 OUT_DIR.mkdir(exist_ok=True)
 MIN_HIST_DAYS = 60
 
-# === FUNCTIONS (adapted from your Colab) ===
+# === FUNCTIONS (your regime analysis, same as before) ===
 def load_intraday_epoch_s(df_path, tz=TZ, time_col="time", unit="s", cutoff=None):
     df = pd.read_csv(df_path)
     t  = pd.to_datetime(df[time_col], unit=unit, utc=True, errors="coerce")
