@@ -47,7 +47,7 @@ def load_sheet(sheet_id, range_name):
 # === CONFIG ===
 TZ = "Asia/Singapore"
 SHEET_ID = "1MwTlXHwGt10Somh4v2sRJjD1VWCvdCYyS5JzLEApN0c"
-RANGE_NAME = "new!A:Z"   # Tab 'new', full columns
+RANGE_NAME = "new!A:E"   # ✅ only look at A:E
 OUT_DIR = Path("outputs")
 OUT_DIR.mkdir(exist_ok=True)
 MIN_HIST_DAYS = 60
@@ -66,6 +66,9 @@ def load_intraday_epoch_s(df_in, tz=TZ, time_col="time", cutoff=None):
     df[time_col] = df[time_col].astype(str).str.strip().astype(float)
     t = pd.to_datetime(df[time_col], unit="s", utc=True, errors="coerce")
     print("DEBUG Parsed time range:", t.min(), "to", t.max())
+
+    if t.isna().all():
+        raise ValueError("All time values failed to parse. Check your Sheet 'time' column format.")
 
     df = df.drop(columns=[time_col]).set_index(t).sort_index()
 
