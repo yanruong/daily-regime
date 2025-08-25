@@ -63,8 +63,9 @@ def load_intraday_epoch_s(df_in, tz=TZ, time_col="time", cutoff=None):
         raise ValueError(f"Expected a '{time_col}' column in the data")
 
     # ✅ Force parse as epoch seconds
-    df[time_col] = df[time_col].astype(float)
+    df[time_col] = df[time_col].astype(str).str.strip().astype(float)
     t = pd.to_datetime(df[time_col], unit="s", utc=True, errors="coerce")
+    print("DEBUG Parsed time range:", t.min(), "to", t.max())
 
     df = df.drop(columns=[time_col]).set_index(t).sort_index()
 
