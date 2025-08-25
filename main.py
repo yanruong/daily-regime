@@ -25,35 +25,46 @@ def send_file(path):
     print(f"DEBUG send_file response for {path}:", r.text)
     return r
 
-# === GOOGLE DRIVE ===
-def download_from_drive(file_id, filename):
+# === GOOGLE SHEETS LOADER ===
+def load_sheet(sheet_id, range_name):
     with open("creds.json", "w") as f:
         f.write(os.getenv("GOOGLE_CREDS"))
 
     creds = service_account.Credentials.from_service_account_file(
-        "creds.json",
-        scopes=["https://www.googleapis.com/auth/drive"]
+        "creds.json", scopes=["https://www.googleapis.com/auth/spreadsheets.readonly"]
     )
-    service = build("drive", "v3", credentials=creds)
+    service = build("sheets", "v4", credentials=creds)
+    sheet = service.spreadsheets()
 
-    request = service.files().get_media(fileId=file_id)
-    fh = io.FileIO(filename, "wb")
-    downloader = MediaIoBaseDownload(fh, request)
-    done = False
-    while not done:
-        status, done = downloader.next_chunk()
+    result = sheet.values().get(spreadsheetId=sheet_id, range=range_name).execute()
+    values = result.get("values", [])
+
+    if not values:
+        raise ValueError("No data found in Google Sheet")
+
+    df = pd.DataFrame(values[1:], columns=values[0])  # first row = header
+    return df
 
 # === CONFIG ===
 TZ = "Asia/Singapore"
-FILE_ID = "1P0uoh8nRHphCXIYzcdLRCm-WAKZm640i"
+SHEET_ID = "1MwTlXHwGt10Somh4v2sRJjD1VWCvdCYyS5JzLEApN0c"
+RANGE_NAME = "new!A:Z"   # Tab 'new', full columns
 OUT_DIR = Path("outputs")
 OUT_DIR.mkdir(exist_ok=True)
 MIN_HIST_DAYS = 60
 
 # === FUNCTIONS (regime analysis) ===
-def load_intraday_epoch_s(df_path, tz=TZ, time_col="time", unit="s", cutoff=None):
-    df = pd.read_csv(df_path)
-    t  = pd.to_datetime(df[time_col], unit=unit, utc=True, errors="coerce")
+def load_intraday_epoch_s(df_in, tz=TZ, time_col="time", unit="s", cutoff=None):
+    if isinstance(df_in, str):  # CSV path
+        df = pd.read_csv(df_in)
+    else:  # DataFrame from Sheets
+        df = df_in.copy()
+
+    # Ensure time column exists
+    if time_col not in df.columns:
+        raise ValueError(f"Expected a '{time_col}' column in the sheet")
+
+    t = pd.to_datetime(df[time_col], errors="coerce", utc=True)
     df = df.drop(columns=[time_col]).set_index(t).sort_index()
     if df.index.tz is None: df.index = df.index.tz_localize("UTC")
     df = df.tz_convert(tz)
@@ -105,11 +116,11 @@ def label_walkforward_quartiles_generic(df_in, range_col, vol_col, out_prefix='r
 
 # === MAIN ===
 def run_daily():
-    # Download file from Drive
-    download_from_drive(FILE_ID, "new.csv")
+    # Load data from Google Sheets
+    df_raw = load_sheet(SHEET_ID, RANGE_NAME)
+    df = load_intraday_epoch_s(df_raw, tz=TZ)
 
     # Build features
-    df = load_intraday_epoch_s("new.csv", tz=TZ)
     daily = daily_prevday_features(df, tz=TZ)
     day_key = df.index.normalize()
     df_roll = df.copy()
@@ -162,10 +173,10 @@ def run_daily():
      .to_parquet(snapshot_path, index=False))
 
     # Send to Telegram
-    send_message("✅ Daily regime analysis complete")
+    send_message("✅ Daily regime analysis complete (from Google Sheets)")
     send_file(summary_path)
     send_file(snapshot_path)
 
 if __name__ == "__main__":
-    send_message("⏳ Starting daily run...")
+    send_message("⏳ Starting daily run (Google Sheets)...")
     run_daily()
