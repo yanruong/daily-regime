@@ -136,27 +136,32 @@ def run_daily():
     )
 
     # Last 10 regimes
+    # Last 10 regimes
     last10 = last_n_from_labels(df_roll, n=10)
-
-    # Convert last10 safely to JSON
+    
+    # Grab the daily numeric values
+    daily_values = daily[['rolling_range_prevday','daily_vol20_prevday']]
+    
     last10_records = []
     for idx, row in last10.iterrows():
         rec = {"date": idx.strftime("%Y-%m-%d")}
-        for col, val in row.items():
-            if pd.isna(val):
-                rec[col] = None
-            elif isinstance(val, (np.integer, int)):
-                rec[col] = int(val)
-            else:
-                rec[col] = str(val)
+        rec["roll_Range_Q"] = int(row["roll_Range_Q"])
+        rec["roll_Vol_Q"]   = int(row["roll_Vol_Q"])
+        rec["label"]        = row["label"]
+    
+        # attach numeric values
+        if idx in daily_values.index:
+            rec["range_value"] = float(daily_values.loc[idx, "rolling_range_prevday"])
+            rec["vol_value"]   = float(daily_values.loc[idx, "daily_vol20_prevday"])
+        else:
+            rec["range_value"] = None
+            rec["vol_value"]   = None
+    
         last10_records.append(rec)
-
-    # Save outputs
-    summary_path = OUT_DIR / "summary.json"
-    snapshot_path = OUT_DIR / "df_roll_snapshot.parquet"
-
+    
     summary = {"last10": last10_records}
     summary_path.write_text(json.dumps(summary, indent=2))
+
 
     cols_to_save = ['roll_Range_Q','roll_Vol_Q','rolling_range_prevday','daily_vol20_prevday']
     (df_roll[cols_to_save]
@@ -167,7 +172,6 @@ def run_daily():
     # Send to Telegram
     send_message("✅ Daily regime analysis complete")
     send_file(summary_path)
-    send_file(snapshot_path)
 
 if __name__ == "__main__":
     send_message("⏳ Starting daily run...")
