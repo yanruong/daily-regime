@@ -9,6 +9,9 @@ import io, requests
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 CHAT_ID = os.getenv("CHAT_ID")
 
+print("DEBUG: TELEGRAM_TOKEN set?", TELEGRAM_TOKEN is not None)
+print("DEBUG: CHAT_ID =", CHAT_ID)
+
 def send_message(msg):
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
     requests.post(url, data={"chat_id": CHAT_ID, "text": msg})
