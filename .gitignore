@@ -1,0 +1,29 @@
+# === Python ===
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+.env
+venv/
+
+# === Jupyter / Colab ===
+.ipynb_checkpoints/
+
+# === System files ===
+.DS_Store
+Thumbs.db
+
+# === Outputs (never commit reports/data) ===
+outputs/
+*.json
+*.parquet
+*.csv
+*.xlsx
+
+# === Secrets (must stay private) ===
+creds.json
+*.key
+*.pem
+
+# === Logs ===
+*.log
