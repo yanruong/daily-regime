@@ -128,31 +128,29 @@ def run_daily():
     )
 
     # Last 10 regimes
-    # Last 10 regimes
     last10 = last_n_from_labels(df_roll, n=10)
 
-    # Convert index to string so JSON accepts it
-    last10.index = last10.index.astype(str)
-
+    # Option 1: simplest — reset index so dates become a column
+    last10_reset = last10.reset_index()
+    summary = {"last10": last10_reset.to_dict(orient="records")}
+    
     # Save outputs
     summary_path = OUT_DIR / "summary.json"
     snapshot_path = OUT_DIR / "df_roll_snapshot.parquet"
     
-    summary = {"last10": last10.to_dict(orient="index")}
     summary_path.write_text(json.dumps(summary, indent=2))
-
-
-    # Save outputs
+    
     cols_to_save = ['roll_Range_Q','roll_Vol_Q','rolling_range_prevday','daily_vol20_prevday']
     (df_roll[cols_to_save]
      .reset_index()
      .rename(columns={'index':'time'})
      .to_parquet(snapshot_path, index=False))
-
-    # Send to Telegram
-    send_message("✅ Daily regime analysis complete")
-    send_file(summary_path)
-    send_file(snapshot_path)
+    
+    
+        # Send to Telegram
+        send_message("✅ Daily regime analysis complete")
+        send_file(summary_path)
+        send_file(snapshot_path)
 
 if __name__ == "__main__":
     send_message("⏳ Starting daily run...")
