@@ -175,12 +175,16 @@ def run_daily():
                .dropna()
                .astype({'roll_Range_Q':'Int64','roll_Vol_Q':'Int64'})
     )
-
-    # Yesterday's last ADX(14)
-    daily_adx = df['adx'].groupby(df.index.normalize()).last()
-    daily_lbl['adx_prevday'] = daily_lbl.index.map(daily_adx.shift(1))
-
-    daily_lbl['label'] = daily_lbl.apply(lambda r: f"R{int(r['roll_Range_Q'])}/V{int(r['roll_Vol_Q'])}", axis=1)
+    
+    # ✅ Yesterday's last 2h bar ADX
+    last_bar_per_day = df.groupby(df.index.normalize())['adx'].last()
+    last_bar_per_day = last_bar_per_day.shift(1)
+    daily_lbl = daily_lbl.join(last_bar_per_day.rename("adx_prevday"), how="left")
+    
+    # Build regime label
+    daily_lbl['label'] = daily_lbl.apply(
+        lambda r: f"R{int(r['roll_Range_Q'])}/V{int(r['roll_Vol_Q'])}", axis=1
+    )
     last10 = daily_lbl.tail(10)
 
     last10_records = []
