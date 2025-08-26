@@ -191,7 +191,8 @@ def run_daily():
             "date": idx.strftime("%Y-%m-%d"),
             "roll_Range_Q": int(row["roll_Range_Q"]),
             "roll_Vol_Q": int(row["roll_Vol_Q"]),
-            "label": row["label"],
+            # build label dynamically instead of relying on a column
+            "label": f"R{int(row['roll_Range_Q'])}/V{int(row['roll_Vol_Q'])}",
             "range_value": None if pd.isna(row["rolling_range_prevday"]) else float(row["rolling_range_prevday"]),
             "vol_value": None if pd.isna(row["daily_vol20_prevday"]) else float(row["daily_vol20_prevday"]),
             "adx_value": None if pd.isna(row["adx_prevday"]) else float(row["adx_prevday"]),
