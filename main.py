@@ -188,6 +188,8 @@ def run_daily():
     # DEBUG: print last few rows in Actions log
     print("DEBUG daily_lbl tail(10):")
     print(daily_lbl.tail(10))
+    print("DEBUG daily_lbl columns:", daily_lbl.columns.tolist())
+    print(daily_lbl.tail(5))
 
     last10 = daily_lbl.tail(10)
 
