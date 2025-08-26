@@ -83,10 +83,9 @@ def daily_prevday_features(df, tz=TZ, atr_n=14, vol_n=20):
     day = df.index.tz_convert(tz).normalize()
     g = (df.assign(_day=day)
            .groupby('_day')
-           .agg(high=('high','max'), low=('low','min'), close=('close','last'))
-           .dropna())
+           .agg(high=('high','max'), low=('low','min'), close=('close','last')))
     g['ret']   = g['close'].pct_change()
-    g['vol20'] = g['ret'].rolling(vol_n, min_periods=vol_n).std()
+    g['vol20'] = g['ret'].rolling(vol_n, min_periods=1).std()
     prev_c = g['close'].shift(1)
     tr = pd.concat([(g['high']-g['low']).abs(),
                     (g['high']-prev_c).abs(),
@@ -172,31 +171,38 @@ def run_daily():
         df_roll.assign(_day=day)
                .groupby('_day')[['roll_Range_Q','roll_Vol_Q','rolling_range_prevday','daily_vol20_prevday']]
                .first()
-               .dropna()
                .astype({'roll_Range_Q':'Int64','roll_Vol_Q':'Int64'})
     )
-    
+
     # ✅ Yesterday's last 2h bar ADX
     last_bar_per_day = df.groupby(df.index.normalize())['adx'].last()
     last_bar_per_day = last_bar_per_day.shift(1)
     daily_lbl = daily_lbl.join(last_bar_per_day.rename("adx_prevday"), how="left")
-    
-    # Build regime label
+
+    # ✅ Add label safely
     daily_lbl['label'] = daily_lbl.apply(
-        lambda r: f"R{int(r['roll_Range_Q'])}/V{int(r['roll_Vol_Q'])}", axis=1
+        lambda r: f"R{int(r['roll_Range_Q'])}/V{int(r['roll_Vol_Q'])}" 
+                  if pd.notna(r['roll_Range_Q']) and pd.notna(r['roll_Vol_Q']) 
+                  else "NA",
+        axis=1
     )
+
+    # DEBUG: print last few rows in Actions log
+    print("DEBUG daily_lbl tail(10):")
+    print(daily_lbl.tail(10))
+
     last10 = daily_lbl.tail(10)
 
     last10_records = []
     for idx, row in last10.iterrows():
-        cell = (int(row["roll_Range_Q"]), int(row["roll_Vol_Q"]))
+        cell = (int(row["roll_Range_Q"]) if pd.notna(row["roll_Range_Q"]) else -1,
+                int(row["roll_Vol_Q"]) if pd.notna(row["roll_Vol_Q"]) else -1)
         allow_trade = cell not in EXCLUDED_CELLS
         rec = {
             "date": idx.strftime("%Y-%m-%d"),
-            "roll_Range_Q": int(row["roll_Range_Q"]),
-            "roll_Vol_Q": int(row["roll_Vol_Q"]),
-            # build label dynamically instead of relying on a column
-            "label": f"R{int(row['roll_Range_Q'])}/V{int(row['roll_Vol_Q'])}",
+            "roll_Range_Q": None if pd.isna(row["roll_Range_Q"]) else int(row["roll_Range_Q"]),
+            "roll_Vol_Q": None if pd.isna(row["roll_Vol_Q"]) else int(row["roll_Vol_Q"]),
+            "label": row["label"],
             "range_value": None if pd.isna(row["rolling_range_prevday"]) else float(row["rolling_range_prevday"]),
             "vol_value": None if pd.isna(row["daily_vol20_prevday"]) else float(row["daily_vol20_prevday"]),
             "adx_value": None if pd.isna(row["adx_prevday"]) else float(row["adx_prevday"]),
@@ -216,9 +222,9 @@ def run_daily():
         msg_lines.append(
             f"📅 {day['date']} → {trade_msg}\n"
             f"   Regime: {day['label']}\n"
-            f"   Range: {day['range_value']:.4f}\n"
-            f"   Vol:   {day['vol_value']:.4f}\n"
-            f"   ADX(14): {day['adx_value']:.2f}\n"
+            f"   Range: {day['range_value']}\n"
+            f"   Vol:   {day['vol_value']}\n"
+            f"   ADX(14): {day['adx_value']}\n"
         )
     text_summary = "\n".join(msg_lines)
 
