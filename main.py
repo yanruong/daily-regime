@@ -1,12 +1,14 @@
-import os, json, numpy as np, pandas as pd 
+import os, json, numpy as np, pandas as pd
 from pathlib import Path
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
 import requests
+import telebot  # pip install pyTelegramBotAPI
 
 # === TELEGRAM ===
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 CHAT_ID = os.getenv("CHAT_ID")  # set in GitHub Secrets
+bot = telebot.TeleBot(TELEGRAM_TOKEN)
 
 def send_message(msg: str):
     """Send plain text message to Telegram group."""
@@ -124,7 +126,63 @@ def label_walkforward_quartiles_generic(df_in, range_col, vol_col, out_prefix='r
         df.loc[sel, out_V] = pd.cut(df.loc[sel,  vol_col], v_bins,   labels=False, include_lowest=True).astype('Int64')
     return df
 
-# === MAIN ===
+# === REGIME CALCULATIONS ===
+def get_monthly_regime(year: int, month: int):
+    df_raw = load_sheet(SHEET_ID, RANGE_NAME)
+    df = load_intraday_epoch_s(df_raw, tz=TZ)
+
+    daily = daily_prevday_features(df, tz=TZ)
+    day_key = df.index.normalize()
+    df_roll = df.copy()
+    df_roll['rolling_range_prevday'] = day_key.map(daily['rolling_range_prevday'])
+    df_roll['daily_vol20_prevday']   = day_key.map(daily['daily_vol20_prevday'])
+    df_roll = label_walkforward_quartiles_generic(
+        df_roll,
+        range_col='rolling_range_prevday',
+        vol_col='daily_vol20_prevday',
+        out_prefix='roll_',
+        min_hist_days=MIN_HIST_DAYS,
+        tz=TZ
+    )
+
+    day = df_roll.index.normalize()
+    daily_lbl = (
+        df_roll.assign(_day=day)
+               .groupby('_day')[['roll_Range_Q','roll_Vol_Q',
+                                 'rolling_range_prevday','daily_vol20_prevday']]
+               .first()
+               .dropna()
+               .astype({'roll_Range_Q':'Int64','roll_Vol_Q':'Int64'})
+    )
+    daily_lbl['label'] = daily_lbl.apply(
+        lambda r: f"R{int(r['roll_Range_Q'])}/V{int(r['roll_Vol_Q'])}", axis=1
+    )
+    daily_lbl['trade'] = daily_lbl.apply(
+        lambda r: (int(r['roll_Range_Q']), int(r['roll_Vol_Q'])) not in EXCLUDED_CELLS,
+        axis=1
+    )
+
+    return daily_lbl.loc[
+        (daily_lbl.index.year == year) & (daily_lbl.index.month == month)
+    ]
+
+def format_monthly_regime(year: int, month: int) -> str:
+    df = get_monthly_regime(year, month)
+    if df.empty:
+        return f"⚠️ No regime data found for {year}-{month:02d}"
+
+    lines = [f"📊 Regime breakdown for {year}-{month:02d}\n"]
+    for date, row in df.iterrows():
+        trade_msg = "✅ TRADE" if row['trade'] else "🚫 NO TRADE"
+        lines.append(
+            f"📅 {date.strftime('%Y-%m-%d')} → {trade_msg}\n"
+            f"   Regime: {row['label']}\n"
+            f"   Range: {row['rolling_range_prevday']:.4f}\n"
+            f"   Vol:   {row['daily_vol20_prevday']:.4f}\n"
+        )
+    return "\n".join(lines)
+
+# === DAILY UPDATE ===
 def run_daily():
     df_raw = load_sheet(SHEET_ID, RANGE_NAME)
     df = load_intraday_epoch_s(df_raw, tz=TZ)
@@ -189,6 +247,21 @@ def run_daily():
     send_message(text_summary)
     send_file(summary_path)
 
+# === TELEGRAM HANDLER FOR HISTORICAL REGIME ===
+@bot.message_handler(commands=['regime'])
+def handle_regime(msg):
+    try:
+        parts = msg.text.split()
+        if len(parts) != 3:
+            bot.reply_to(msg, "Usage: /regime <year> <month> (e.g. /regime 2025 8)")
+            return
+        year, month = int(parts[1]), int(parts[2])
+        text_report = format_monthly_regime(year, month)
+        bot.send_message(msg.chat.id, text_report[:4000])  # Telegram msg limit
+    except Exception as e:
+        bot.reply_to(msg, f"⚠️ Error: {e}")
+
+# === MAIN ===
 if __name__ == "__main__":
     try:
         run_daily()
@@ -197,4 +270,7 @@ if __name__ == "__main__":
         import traceback
         send_message(f"❌ Daily run failed: {type(e).__name__}: {str(e)}")
         print("⚠️ Error in run_daily:\n", traceback.format_exc())
-        raise
+
+    # Start polling for Telegram commands (including /regime)
+    print("🤖 Bot is now polling for commands...")
+    bot.infinity_polling()
