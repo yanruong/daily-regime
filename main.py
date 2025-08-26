@@ -4,12 +4,14 @@ from google.oauth2 import service_account
 from googleapiclient.discovery import build
 import requests
 
+# === DEBUG MARKER ===
+print("DEBUG: Running main.py revision marker v2025-08-26-A (safe build, no row['label'])")
+
 # === TELEGRAM ===
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 CHAT_ID = os.getenv("CHAT_ID")  # set in GitHub Secrets
 
 def send_message(msg: str):
-    """Send plain text message to Telegram group."""
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
     try:
         r = requests.post(url, data={"chat_id": CHAT_ID, "text": msg})
@@ -18,7 +20,6 @@ def send_message(msg: str):
         print("⚠️ Failed to send Telegram message:", str(e))
 
 def send_file(path: Path):
-    """Send a file to Telegram group (summary.json)."""
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendDocument"
     try:
         with open(path, "rb") as f:
@@ -29,7 +30,6 @@ def send_file(path: Path):
 
 # === GOOGLE SHEETS LOADER ===
 def load_sheet(sheet_id, range_name):
-    """Load OHLC data from Google Sheet using service account creds."""
     with open("creds.json", "w") as f:
         f.write(os.getenv("GOOGLE_CREDS"))
 
@@ -54,8 +54,6 @@ RANGE_NAME = "new!A:E"
 OUT_DIR = Path("outputs")
 OUT_DIR.mkdir(exist_ok=True)
 MIN_HIST_DAYS = 60
-
-# Excluded regimes → NO TRADE
 EXCLUDED_CELLS = {(0,1), (2,0), (1,0), (3,2), (1,2)}
 
 # === FUNCTIONS ===
@@ -63,19 +61,15 @@ def load_intraday_epoch_s(df_in, tz=TZ, time_col="time"):
     df = df_in.copy()
     df[time_col] = df[time_col].astype(str).str.strip().astype(float)
     t = pd.to_datetime(df[time_col], unit="s", utc=True, errors="coerce")
-
     if t.isna().all():
         raise ValueError("All time values failed to parse. Check 'time' column.")
-
     df = df.drop(columns=[time_col]).set_index(t).sort_index()
     if df.index.tz is None:
         df.index = df.index.tz_localize("UTC")
     df = df.tz_convert(tz)
-
     for col in ["open","high","low","close"]:
         if col in df.columns:
             df[col] = pd.to_numeric(df[col], errors="coerce")
-
     df.columns = [c.lower() for c in df.columns]
     return df
 
@@ -123,26 +117,21 @@ def label_walkforward_quartiles_generic(df_in, range_col, vol_col, out_prefix='r
     return df
 
 def compute_adx(df, period=14):
-    """Compute ADX on 2-hour bars."""
     high, low, close = df['high'], df['low'], df['close']
     plus_dm = high.diff()
     minus_dm = low.shift().sub(low)
-
     plus_dm = plus_dm.where((plus_dm > 0) & (plus_dm > minus_dm), 0.0)
     minus_dm = minus_dm.where((minus_dm > 0) & (minus_dm > plus_dm), 0.0)
-
     tr = pd.concat([
         high - low,
         (high - close.shift()).abs(),
         (low - close.shift()).abs()
     ], axis=1).max(axis=1)
-
     atr = tr.ewm(alpha=1/period, adjust=False).mean()
     plus_di = 100 * (plus_dm.ewm(alpha=1/period, adjust=False).mean() / atr)
     minus_di = 100 * (minus_dm.ewm(alpha=1/period, adjust=False).mean() / atr)
     dx = (plus_di.subtract(minus_di).abs() / (plus_di + minus_di)) * 100
     adx = dx.ewm(alpha=1/period, adjust=False).mean()
-
     df['adx'] = adx
     return df
 
@@ -150,7 +139,7 @@ def compute_adx(df, period=14):
 def run_daily():
     df_raw = load_sheet(SHEET_ID, RANGE_NAME)
     df = load_intraday_epoch_s(df_raw, tz=TZ)
-    df = compute_adx(df, period=14)  # add ADX(14)
+    df = compute_adx(df, period=14)
 
     daily = daily_prevday_features(df, tz=TZ)
     day_key = df.index.normalize()
@@ -174,38 +163,26 @@ def run_daily():
                .astype({'roll_Range_Q':'Int64','roll_Vol_Q':'Int64'})
     )
 
-    # ✅ Yesterday's last 2h bar ADX
+    # Yesterday's last 2h bar ADX
     last_bar_per_day = df.groupby(df.index.normalize())['adx'].last()
     last_bar_per_day = last_bar_per_day.shift(1)
     daily_lbl = daily_lbl.join(last_bar_per_day.rename("adx_prevday"), how="left")
 
-    # ✅ Add label safely
-    daily_lbl['label'] = daily_lbl.apply(
-    lambda r: f"R{int(r['roll_Range_Q'])}/V{int(r['roll_Vol_Q'])}", axis=1
-)
-
-
-    # DEBUG: print last few rows in Actions log
-    print("DEBUG daily_lbl tail(10):")
-    print(daily_lbl.tail(10))
     print("DEBUG daily_lbl columns:", daily_lbl.columns.tolist())
-    print(daily_lbl.tail(5))
 
     last10 = daily_lbl.tail(10)
-
     last10_records = []
     for idx, row in last10.iterrows():
         cell = (int(row["roll_Range_Q"]) if pd.notna(row["roll_Range_Q"]) else -1,
                 int(row["roll_Vol_Q"]) if pd.notna(row["roll_Vol_Q"]) else -1)
         allow_trade = cell not in EXCLUDED_CELLS
-    
-        # ✅ Build label directly here
+
         label_str = (
             f"R{int(row['roll_Range_Q'])}/V{int(row['roll_Vol_Q'])}"
             if pd.notna(row['roll_Range_Q']) and pd.notna(row['roll_Vol_Q'])
             else "NA"
         )
-    
+
         rec = {
             "date": idx.strftime("%Y-%m-%d"),
             "roll_Range_Q": None if pd.isna(row["roll_Range_Q"]) else int(row["roll_Range_Q"]),
@@ -218,12 +195,11 @@ def run_daily():
         }
         last10_records.append(rec)
 
-
     summary = {"last10": last10_records}
     summary_path = OUT_DIR / "summary.json"
     summary_path.write_text(json.dumps(summary, indent=2))
 
-    # Send last 3 days as text
+    # Telegram summary
     last_days = last10_records[-3:]
     msg_lines = ["📊 Regime Bot Update\n"]
     for day in last_days:
