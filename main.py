@@ -198,17 +198,26 @@ def run_daily():
         cell = (int(row["roll_Range_Q"]) if pd.notna(row["roll_Range_Q"]) else -1,
                 int(row["roll_Vol_Q"]) if pd.notna(row["roll_Vol_Q"]) else -1)
         allow_trade = cell not in EXCLUDED_CELLS
+    
+        # ✅ Build label directly here
+        label_str = (
+            f"R{int(row['roll_Range_Q'])}/V{int(row['roll_Vol_Q'])}"
+            if pd.notna(row['roll_Range_Q']) and pd.notna(row['roll_Vol_Q'])
+            else "NA"
+        )
+    
         rec = {
             "date": idx.strftime("%Y-%m-%d"),
             "roll_Range_Q": None if pd.isna(row["roll_Range_Q"]) else int(row["roll_Range_Q"]),
             "roll_Vol_Q": None if pd.isna(row["roll_Vol_Q"]) else int(row["roll_Vol_Q"]),
-            "label": row["label"],
+            "label": label_str,
             "range_value": None if pd.isna(row["rolling_range_prevday"]) else float(row["rolling_range_prevday"]),
             "vol_value": None if pd.isna(row["daily_vol20_prevday"]) else float(row["daily_vol20_prevday"]),
             "adx_value": None if pd.isna(row["adx_prevday"]) else float(row["adx_prevday"]),
             "trade": allow_trade
         }
         last10_records.append(rec)
+
 
     summary = {"last10": last10_records}
     summary_path = OUT_DIR / "summary.json"
