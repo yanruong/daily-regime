@@ -44,7 +44,7 @@ OUT_DIR.mkdir(exist_ok=True)
 MIN_HIST_DAYS = 60
 EXCLUDED_CELLS = {(0,1), (2,0), (1,0), (3,2), (1,2)}
 
-# === UTILS ===
+# === BIN HELPERS ===
 def _serialize(arr): return [float(x) if np.isfinite(x) else ("inf" if x>0 else "-inf") for x in arr]
 def _deserialize(lst): return np.array([np.inf if v=="inf" else -np.inf if v=="-inf" else float(v) for v in lst])
 
@@ -155,14 +155,23 @@ def run_daily():
     save_daily_result(str(today.date()), result, OUT_DIR)
 
     # === load history and take last 3 days ===
+        # === load history ===
     hist_path = OUT_DIR / "regime_history.json"
     history = {}
     if hist_path.exists():
         history = json.loads(hist_path.read_text())
     records = [history[d] for d in sorted(history.keys())]
-    last3 = records[-3:]
 
-    # build Telegram message
+    # last 10 for JSON, last 3 for message
+    last10 = records[-10:] if len(records) >= 10 else records
+    last3  = records[-3:] if len(records) >= 3 else records
+
+    # save last 10 into summary.json
+    summary_path = OUT_DIR / "summary.json"
+    summary_data = {"last10": last10}
+    summary_path.write_text(json.dumps(summary_data, indent=2))
+
+    # === 1) build human-readable message (last 3) ===
     msg_lines = ["📊 Regime Bot Update\n"]
     for rec in last3:
         trade_msg = "✅ TRADE" if rec["trade"] else "🚫 NO TRADE"
@@ -174,7 +183,17 @@ def run_daily():
         )
     text_summary = "\n".join(msg_lines)
 
+    # === 2) send human-readable update ===
     send_message(text_summary)
+
+    # === 3) send summary.json file (last 10 days) ===
+    try:
+        with open(summary_path, "rb") as f:
+            url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendDocument"
+            r = requests.post(url, data={"chat_id": CHAT_ID}, files={"document": f})
+            r.raise_for_status()
+    except Exception as e:
+        print("⚠️ Could not send summary.json file:", str(e))
 
 if __name__ == "__main__":
     try:
