@@ -1,15 +1,12 @@
-import os, json, numpy as np, pandas as pd 
+import os, json, numpy as np, pandas as pd
 from pathlib import Path
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
 import requests
 
-# === DEBUG MARKER ===
-print("DEBUG: Running main.py revision marker v2025-08-26-B (with correct ADX)")
-
 # === TELEGRAM ===
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
-CHAT_ID = os.getenv("CHAT_ID")  # set in GitHub Secrets
+CHAT_ID = os.getenv("CHAT_ID")
 
 def send_message(msg: str):
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
@@ -18,15 +15,6 @@ def send_message(msg: str):
         r.raise_for_status()
     except Exception as e:
         print("⚠️ Failed to send Telegram message:", str(e))
-
-def send_file(path: Path):
-    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendDocument"
-    try:
-        with open(path, "rb") as f:
-            r = requests.post(url, data={"chat_id": CHAT_ID}, files={"document": f})
-            r.raise_for_status()
-    except Exception as e:
-        print("⚠️ Failed to send Telegram file:", str(e))
 
 # === GOOGLE SHEETS LOADER ===
 def load_sheet(sheet_id, range_name):
@@ -56,181 +44,133 @@ OUT_DIR.mkdir(exist_ok=True)
 MIN_HIST_DAYS = 60
 EXCLUDED_CELLS = {(0,1), (2,0), (1,0), (3,2), (1,2)}
 
-# === FUNCTIONS ===
+# === UTILS ===
+def _serialize(arr): return [float(x) if np.isfinite(x) else ("inf" if x>0 else "-inf") for x in arr]
+def _deserialize(lst): return np.array([np.inf if v=="inf" else -np.inf if v=="-inf" else float(v) for v in lst])
+
+def save_month_bins(month_start, r_bins, v_bins, out_dir):
+    key = pd.Timestamp(month_start.year, month_start.month, 1).strftime("%Y-%m")
+    p = Path(out_dir) / "monthly_bins.json"
+    store = {}
+    if p.exists():
+        store = json.loads(p.read_text())
+    if key not in store:   # ✅ only save once
+        store[key] = {"range_bins": _serialize(r_bins), "vol_bins": _serialize(v_bins)}
+        p.write_text(json.dumps(store, indent=2))
+
+def load_month_bins(month_start, out_dir):
+    key = pd.Timestamp(month_start.year, month_start.month, 1).strftime("%Y-%m")
+    p = Path(out_dir) / "monthly_bins.json"
+    if not p.exists(): return None
+    store = json.loads(p.read_text())
+    if key in store:
+        rb = _deserialize(store[key]["range_bins"])
+        vb = _deserialize(store[key]["vol_bins"])
+        return rb, vb
+    return None
+
+def save_daily_result(date, result, out_dir):
+    p = Path(out_dir) / "regime_history.json"
+    store = {}
+    if p.exists():
+        store = json.loads(p.read_text())
+    if date not in store:   # ✅ don’t overwrite existing
+        store[date] = result
+        p.write_text(json.dumps(store, indent=2))
+
+# === CORE FUNCTIONS ===
 def load_intraday_epoch_s(df_in, tz=TZ, time_col="time"):
     df = df_in.copy()
     df[time_col] = df[time_col].astype(str).str.strip().astype(float)
     t = pd.to_datetime(df[time_col], unit="s", utc=True, errors="coerce")
-    if t.isna().all():
-        raise ValueError("All time values failed to parse. Check 'time' column.")
+    if t.isna().all(): raise ValueError("All time values failed to parse. Check 'time' column.")
     df = df.drop(columns=[time_col]).set_index(t).sort_index()
-    if df.index.tz is None:
-        df.index = df.index.tz_localize("UTC")
+    if df.index.tz is None: df.index = df.index.tz_localize("UTC")
     df = df.tz_convert(tz)
     for col in ["open","high","low","close"]:
-        if col in df.columns:
-            df[col] = pd.to_numeric(df[col], errors="coerce")
+        if col in df.columns: df[col] = pd.to_numeric(df[col], errors="coerce")
     df.columns = [c.lower() for c in df.columns]
     return df
 
-def daily_prevday_features(df, tz=TZ, atr_n=14, vol_n=20):
-    day = df.index.tz_convert(tz).normalize()
+def daily_prevday_features(df, atr_n=14, vol_n=20):
+    day = df.index.normalize()
     g = (df.assign(_day=day)
            .groupby('_day')
-           .agg(high=('high','max'), low=('low','min'), close=('close','last')))
-    g['ret']   = g['close'].pct_change()
-    g['vol20'] = g['ret'].rolling(vol_n, min_periods=1).std()
+           .agg(high=('high','max'), low=('low','min'), close=('close','last'))
+           .dropna())
+    g['ret'] = g['close'].pct_change()
+    g['vol20'] = g['ret'].rolling(vol_n, min_periods=vol_n).std()
     prev_c = g['close'].shift(1)
-    tr = pd.concat([(g['high']-g['low']).abs(),
-                    (g['high']-prev_c).abs(),
-                    (g['low'] -prev_c).abs()], axis=1).max(axis=1)
+    tr = pd.concat([(g['high']-g['low']).abs(), (g['high']-prev_c).abs(), (g['low']-prev_c).abs()], axis=1).max(axis=1)
     atr = tr.ewm(alpha=1/atr_n, adjust=False).mean()
     g['atr_pct'] = atr / g['close'].replace(0, np.nan)
-    g['rolling_range_prevday'] = g['atr_pct'].shift(1)
-    g['daily_vol20_prevday']   = g['vol20'].shift(1)
-    return g[['rolling_range_prevday','daily_vol20_prevday']]
-
-def label_walkforward_quartiles_generic(df_in, range_col, vol_col, out_prefix='roll_', min_hist_days=MIN_HIST_DAYS, tz=TZ):
-    df = df_in.copy()
-    out_R, out_V = f'{out_prefix}Range_Q', f'{out_prefix}Vol_Q'
-    df[out_R] = pd.Series(pd.NA, index=df.index, dtype='Int64')
-    df[out_V] = pd.Series(pd.NA, index=df.index, dtype='Int64')
-    idx_local = df.index.tz_convert(tz)
-    if idx_local.empty:
-        raise ValueError("Datetime index is empty — check your 'time' column parsing.")
-    first_ms  = pd.Timestamp(idx_local.min().year, idx_local.min().month, 1, tz=tz)
-    last_ms   = pd.Timestamp(idx_local.max().year,  idx_local.max().month,  1, tz=tz)
-    month_starts = pd.date_range(first_ms, last_ms, freq='MS', tz=tz)
-    for i in range(1, len(month_starts)):
-        m0 = month_starts[i]
-        m1 = month_starts[i+1] if i+1 < len(month_starts) else (m0 + pd.offsets.MonthBegin(1))
-        hist = df.loc[:m0 - pd.Timedelta('1ns'), [range_col, vol_col]].dropna()
-        if hist.index.normalize().nunique() < min_hist_days:
-            continue
-        rq = hist[range_col].quantile([.25,.50,.75]).to_list()
-        vq = hist[vol_col].quantile([.25,.50,.75]).to_list()
-        r_bins = np.array([-np.inf, *rq, np.inf], float)
-        v_bins = np.array([-np.inf, *vq, np.inf], float)
-        sel = (df.index >= m0) & (df.index < m1)
-        df.loc[sel, out_R] = pd.cut(df.loc[sel, range_col], r_bins, labels=False, include_lowest=True).astype('Int64')
-        df.loc[sel, out_V] = pd.cut(df.loc[sel,  vol_col], v_bins,   labels=False, include_lowest=True).astype('Int64')
-    return df
-
-# === ADX (Wilder’s smoothing, TradingView match) ===
-def compute_adx(df, n=14, high_col='high', low_col='low', close_col='close'):
-    h, l, c = df[high_col], df[low_col], df[close_col]
-    up_move   = h.diff()
-    down_move = l.shift(1) - l
-
-    plus_dm  = np.where((up_move > down_move) & (up_move > 0), up_move, 0.0)
-    minus_dm = np.where((down_move > up_move) & (down_move > 0), down_move, 0.0)
-
-    tr1 = h - l
-    tr2 = (h - c.shift()).abs()
-    tr3 = (l - c.shift()).abs()
-    tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
-
-    alpha = 1.0 / n
-    atr      = pd.Series(tr).ewm(alpha=alpha, adjust=False).mean()
-    plus_dm_s  = pd.Series(plus_dm, index=df.index).ewm(alpha=alpha, adjust=False).mean()
-    minus_dm_s = pd.Series(minus_dm, index=df.index).ewm(alpha=alpha, adjust=False).mean()
-
-    pdi = 100.0 * (plus_dm_s / atr).replace([np.inf, -np.inf], np.nan)
-    mdi = 100.0 * (minus_dm_s / atr).replace([np.inf, -np.inf], np.nan)
-
-    dx = 100.0 * (pdi.subtract(mdi).abs() / (pdi + mdi)).replace([np.inf, -np.inf], np.nan)
-    adx = dx.ewm(alpha=alpha, adjust=False).mean()
-    return adx
+    g['range_prevday'] = g['atr_pct'].shift(1)
+    g['vol20_prevday'] = g['vol20'].shift(1)
+    return g
 
 # === MAIN ===
 def run_daily():
     df_raw = load_sheet(SHEET_ID, RANGE_NAME)
     df = load_intraday_epoch_s(df_raw, tz=TZ)
+    daily = daily_prevday_features(df)
 
-    # compute ADX(14) per 2h bar
-    df['adx'] = compute_adx(df, n=14)
+    today = df.index.max().normalize()
+    month_start = pd.Timestamp(today.year, today.month, 1, tz=TZ)
 
-    daily = daily_prevday_features(df, tz=TZ)
-    day_key = df.index.normalize()
-    df_roll = df.copy()
-    df_roll['rolling_range_prevday'] = day_key.map(daily['rolling_range_prevday'])
-    df_roll['daily_vol20_prevday']   = day_key.map(daily['daily_vol20_prevday'])
-    df_roll = label_walkforward_quartiles_generic(
-        df_roll,
-        range_col='rolling_range_prevday',
-        vol_col='daily_vol20_prevday',
-        out_prefix='roll_',
-        min_hist_days=MIN_HIST_DAYS,
-        tz=TZ
+    # load or fit bins
+    bins = load_month_bins(month_start, OUT_DIR)
+    if bins is None:
+        hist = daily.loc[:month_start - pd.Timedelta("1ns"), ["range_prevday","vol20_prevday"]].dropna()
+        if len(hist) < MIN_HIST_DAYS: raise ValueError("Insufficient history to fit bins")
+        r_bins = hist["range_prevday"].quantile([.25,.5,.75]).to_numpy()
+        v_bins = hist["vol20_prevday"].quantile([.25,.5,.75]).to_numpy()
+        r_bins = np.array([-np.inf, *r_bins, np.inf])
+        v_bins = np.array([-np.inf, *v_bins, np.inf])
+        save_month_bins(month_start, r_bins, v_bins, OUT_DIR)
+    else:
+        r_bins, v_bins = bins
+
+    # classify today
+    rng = daily.loc[today, "range_prevday"]
+    vol = daily.loc[today, "vol20_prevday"]
+
+    R = pd.cut([rng], r_bins, labels=False, include_lowest=True)[0] if pd.notna(rng) else None
+    V = pd.cut([vol], v_bins, labels=False, include_lowest=True)[0] if pd.notna(vol) else None
+
+    cell = (int(R), int(V)) if R is not None and V is not None else None
+    allow = (cell not in EXCLUDED_CELLS) if cell else False
+    label = f"R{R}/V{V}" if cell else "NA"
+
+    result = {
+        "date": str(today.date()),
+        "range_value": None if pd.isna(rng) else float(rng),
+        "vol_value": None if pd.isna(vol) else float(vol),
+        "Range_Q": None if R is None else int(R),
+        "Vol_Q": None if V is None else int(V),
+        "label": label,
+        "trade": allow
+    }
+
+    # save daily result (frozen)
+    save_daily_result(str(today.date()), result, OUT_DIR)
+
+    # send telegram
+    trade_msg = "✅ TRADE" if allow else "🚫 NO TRADE"
+    msg = (
+        f"📊 Regime Bot Update\n\n"
+        f"📅 {result['date']} → {trade_msg}\n"
+        f"Regime: {label}\n"
+        f"Range: {result['range_value']}\n"
+        f"Vol:   {result['vol_value']}\n"
     )
-
-    day = df_roll.index.normalize()
-    daily_lbl = (
-        df_roll.assign(_day=day)
-               .groupby('_day')[['roll_Range_Q','roll_Vol_Q','rolling_range_prevday','daily_vol20_prevday']]
-               .first()
-               .astype({'roll_Range_Q':'Int64','roll_Vol_Q':'Int64'})
-    )
-
-    # yesterday’s last 2h ADX
-    last_bar_adx = df.groupby(df.index.normalize())['adx'].last()
-    last_bar_adx = last_bar_adx.shift(1)
-    daily_lbl = daily_lbl.join(last_bar_adx.rename("adx_prevday"), how="left")
-
-    print("DEBUG daily_lbl columns:", daily_lbl.columns.tolist())
-
-    last10 = daily_lbl.tail(10)
-    last10_records = []
-    for idx, row in last10.iterrows():
-        cell = (int(row["roll_Range_Q"]) if pd.notna(row["roll_Range_Q"]) else -1,
-                int(row["roll_Vol_Q"]) if pd.notna(row["roll_Vol_Q"]) else -1)
-        allow_trade = cell not in EXCLUDED_CELLS
-
-        label_str = (
-            f"R{int(row['roll_Range_Q'])}/V{int(row['roll_Vol_Q'])}"
-            if pd.notna(row['roll_Range_Q']) and pd.notna(row['roll_Vol_Q'])
-            else "NA"
-        )
-
-        rec = {
-            "date": idx.strftime("%Y-%m-%d"),
-            "roll_Range_Q": None if pd.isna(row["roll_Range_Q"]) else int(row["roll_Range_Q"]),
-            "roll_Vol_Q": None if pd.isna(row["roll_Vol_Q"]) else int(row["roll_Vol_Q"]),
-            "label": label_str,
-            "range_value": None if pd.isna(row["rolling_range_prevday"]) else float(row["rolling_range_prevday"]),
-            "vol_value": None if pd.isna(row["daily_vol20_prevday"]) else float(row["daily_vol20_prevday"]),
-            "adx_value": None if pd.isna(row["adx_prevday"]) else float(row["adx_prevday"]),
-            "trade": allow_trade
-        }
-        last10_records.append(rec)
-
-    summary = {"last10": last10_records}
-    summary_path = OUT_DIR / "summary.json"
-    summary_path.write_text(json.dumps(summary, indent=2))
-
-    # Telegram summary
-    last_days = last10_records[-3:]
-    msg_lines = ["📊 Regime Bot Update\n"]
-    for day in last_days:
-        trade_msg = "✅ TRADE" if day["trade"] else "🚫 NO TRADE"
-        msg_lines.append(
-            f"📅 {day['date']} → {trade_msg}\n"
-            f"   Regime: {day['label']}\n"
-            f"   Range: {day['range_value']}\n"
-            f"   Vol:   {day['vol_value']}\n"
-            f"   ADX(14): {day['adx_value']}\n"
-        )
-    text_summary = "\n".join(msg_lines)
-
-    send_message(text_summary)
-    send_file(summary_path)
+    send_message(msg)
 
 if __name__ == "__main__":
     try:
         run_daily()
-        print("✅ Daily report completed and sent to Telegram.")
+        print("✅ Daily report done")
     except Exception as e:
         import traceback
-        send_message(f"❌ Daily run failed: {type(e).__name__}: {str(e)}")
-        print("⚠️ Error in run_daily:\n", traceback.format_exc())
+        send_message(f"❌ Run failed: {type(e).__name__}: {str(e)}")
+        print(traceback.format_exc())
         raise
