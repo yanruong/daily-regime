@@ -181,11 +181,9 @@ def run_daily():
 
     # ✅ Add label safely
     daily_lbl['label'] = daily_lbl.apply(
-        lambda r: f"R{int(r['roll_Range_Q'])}/V{int(r['roll_Vol_Q'])}" 
-                  if pd.notna(r['roll_Range_Q']) and pd.notna(r['roll_Vol_Q']) 
-                  else "NA",
-        axis=1
-    )
+    lambda r: f"R{int(r['roll_Range_Q'])}/V{int(r['roll_Vol_Q'])}", axis=1
+)
+
 
     # DEBUG: print last few rows in Actions log
     print("DEBUG daily_lbl tail(10):")
