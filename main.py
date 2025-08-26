@@ -154,16 +154,27 @@ def run_daily():
     # save daily result (frozen)
     save_daily_result(str(today.date()), result, OUT_DIR)
 
-    # send telegram
-    trade_msg = "✅ TRADE" if allow else "🚫 NO TRADE"
-    msg = (
-        f"📊 Regime Bot Update\n\n"
-        f"📅 {result['date']} → {trade_msg}\n"
-        f"Regime: {label}\n"
-        f"Range: {result['range_value']}\n"
-        f"Vol:   {result['vol_value']}\n"
-    )
-    send_message(msg)
+    # === load history and take last 3 days ===
+    hist_path = OUT_DIR / "regime_history.json"
+    history = {}
+    if hist_path.exists():
+        history = json.loads(hist_path.read_text())
+    records = [history[d] for d in sorted(history.keys())]
+    last3 = records[-3:]
+
+    # build Telegram message
+    msg_lines = ["📊 Regime Bot Update\n"]
+    for rec in last3:
+        trade_msg = "✅ TRADE" if rec["trade"] else "🚫 NO TRADE"
+        msg_lines.append(
+            f"📅 {rec['date']} → {trade_msg}\n"
+            f"   Regime: {rec['label']}\n"
+            f"   Range: {rec['range_value']:.4f}\n"
+            f"   Vol:   {rec['vol_value']:.4f}\n"
+        )
+    text_summary = "\n".join(msg_lines)
+
+    send_message(text_summary)
 
 if __name__ == "__main__":
     try:
