@@ -5,7 +5,7 @@ from googleapiclient.discovery import build
 import requests
 
 # === DEBUG MARKER ===
-print("DEBUG: Running main.py revision marker v2025-08-26-A (safe build, no row['label'])")
+print("DEBUG: Running main.py revision marker v2025-08-26-B (with correct ADX)")
 
 # === TELEGRAM ===
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
@@ -116,30 +116,39 @@ def label_walkforward_quartiles_generic(df_in, range_col, vol_col, out_prefix='r
         df.loc[sel, out_V] = pd.cut(df.loc[sel,  vol_col], v_bins,   labels=False, include_lowest=True).astype('Int64')
     return df
 
-def compute_adx(df, period=14):
-    high, low, close = df['high'], df['low'], df['close']
-    plus_dm = high.diff()
-    minus_dm = low.shift().sub(low)
-    plus_dm = plus_dm.where((plus_dm > 0) & (plus_dm > minus_dm), 0.0)
-    minus_dm = minus_dm.where((minus_dm > 0) & (minus_dm > plus_dm), 0.0)
-    tr = pd.concat([
-        high - low,
-        (high - close.shift()).abs(),
-        (low - close.shift()).abs()
-    ], axis=1).max(axis=1)
-    atr = tr.ewm(alpha=1/period, adjust=False).mean()
-    plus_di = 100 * (plus_dm.ewm(alpha=1/period, adjust=False).mean() / atr)
-    minus_di = 100 * (minus_dm.ewm(alpha=1/period, adjust=False).mean() / atr)
-    dx = (plus_di.subtract(minus_di).abs() / (plus_di + minus_di)) * 100
-    adx = dx.ewm(alpha=1/period, adjust=False).mean()
-    df['adx'] = adx
-    return df
+# === ADX (Wilder’s smoothing, TradingView match) ===
+def compute_adx(df, n=14, high_col='high', low_col='low', close_col='close'):
+    h, l, c = df[high_col], df[low_col], df[close_col]
+    up_move   = h.diff()
+    down_move = l.shift(1) - l
+
+    plus_dm  = np.where((up_move > down_move) & (up_move > 0), up_move, 0.0)
+    minus_dm = np.where((down_move > up_move) & (down_move > 0), down_move, 0.0)
+
+    tr1 = h - l
+    tr2 = (h - c.shift()).abs()
+    tr3 = (l - c.shift()).abs()
+    tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
+
+    alpha = 1.0 / n
+    atr      = pd.Series(tr).ewm(alpha=alpha, adjust=False).mean()
+    plus_dm_s  = pd.Series(plus_dm, index=df.index).ewm(alpha=alpha, adjust=False).mean()
+    minus_dm_s = pd.Series(minus_dm, index=df.index).ewm(alpha=alpha, adjust=False).mean()
+
+    pdi = 100.0 * (plus_dm_s / atr).replace([np.inf, -np.inf], np.nan)
+    mdi = 100.0 * (minus_dm_s / atr).replace([np.inf, -np.inf], np.nan)
+
+    dx = 100.0 * (pdi.subtract(mdi).abs() / (pdi + mdi)).replace([np.inf, -np.inf], np.nan)
+    adx = dx.ewm(alpha=alpha, adjust=False).mean()
+    return adx
 
 # === MAIN ===
 def run_daily():
     df_raw = load_sheet(SHEET_ID, RANGE_NAME)
     df = load_intraday_epoch_s(df_raw, tz=TZ)
-    df = compute_adx(df, period=14)
+
+    # compute ADX(14) per 2h bar
+    df['adx'] = compute_adx(df, n=14)
 
     daily = daily_prevday_features(df, tz=TZ)
     day_key = df.index.normalize()
@@ -163,10 +172,10 @@ def run_daily():
                .astype({'roll_Range_Q':'Int64','roll_Vol_Q':'Int64'})
     )
 
-    # Yesterday's last 2h bar ADX
-    last_bar_per_day = df.groupby(df.index.normalize())['adx'].last()
-    last_bar_per_day = last_bar_per_day.shift(1)
-    daily_lbl = daily_lbl.join(last_bar_per_day.rename("adx_prevday"), how="left")
+    # yesterday’s last 2h ADX
+    last_bar_adx = df.groupby(df.index.normalize())['adx'].last()
+    last_bar_adx = last_bar_adx.shift(1)
+    daily_lbl = daily_lbl.join(last_bar_adx.rename("adx_prevday"), how="left")
 
     print("DEBUG daily_lbl columns:", daily_lbl.columns.tolist())
 
